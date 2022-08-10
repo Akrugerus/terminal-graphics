@@ -1,6 +1,8 @@
+from functools import cached_property
 import logging
+import os
 from copy import deepcopy
-from math import tan, cos, sin
+from math import cos, sin, sqrt, tan
 from pprint import pformat
 from typing import List
 
@@ -18,6 +20,17 @@ class vec3d:
         self.y: float = y
         self.z: float = z
 
+    def normalize(self):
+        normal_len = sqrt(self.x * self.x + self.y * self.y + self.z * self.z)
+        if normal_len == 0.0:
+            return
+        self.x /= normal_len
+        self.y /= normal_len
+        self.z /= normal_len
+
+    def __sub__(self, b):
+        return vec3d(self.x + b.x, self.y + b.y, self.z + b.z)
+
     def __repr__(self) -> str:
         return f"({self.x}, {self.y}, {self.z})"
 
@@ -27,6 +40,14 @@ class triangle:
         self.p1 = p1
         self.p2 = p2
         self.p3 = p3
+
+    @property
+    def sort_key(self):
+        return self.p1.z + self.p2.z + self.p3.z / 3.0
+
+    @cached_property
+    def normal(self):
+        return calculate_normal(self)
 
     @classmethod
     def from_points(cls, *points):
@@ -56,6 +77,30 @@ class mesh:
     def __init__(self, triangles) -> None:
         self.tris = triangles
 
+    @classmethod
+    def load_from_object_file(cls, path):
+        if not os.path.exists(path):
+            return None
+        vertex_array: List[vec3d] = []
+        tri_array: List[triangle] = []
+        with open(path, "r") as file:
+            for line in file:
+                line = line.strip()
+                if line.startswith("v"):
+                    points = line[2:].split(" ")
+                    vec = vec3d(float(points[0]), float(points[1]), float(points[2]))
+                    vertex_array.append(vec)
+                if line.startswith("f"):
+                    indices = line[2:].split(" ")
+                    tri = triangle(
+                        vertex_array[int(indices[0]) - 1],
+                        vertex_array[int(indices[1]) - 1],
+                        vertex_array[int(indices[2]) - 1],
+                    )
+                    tri_array.append(tri)
+
+        return mesh(tri_array)
+
 
 class mat4x4:
     m: List[List]
@@ -68,8 +113,6 @@ class mat4x4:
             [0.0, 0.0, 0.0, 0.0],
         ]
 
-        self.m = [[0.0] * 4] * 4
-
     def __repr__(self) -> str:
         return pformat(self.m)
 
@@ -79,6 +122,7 @@ class Window:
     _screenwidth: float = 1000.0
 
     def __init__(self) -> None:
+        self.vCamera = vec3d(0.0, 0.0, 0.0)
         self.fTheta = 0.0
         fNear: float = 0.1
         fFar: float = 1000.0
@@ -100,6 +144,15 @@ class Window:
         self.clock = pygame.time.Clock()
 
     def start(self):
+        ship = mesh.load_from_object_file("ship.obj")
+        from shapes import cube
+
+        if ship is None:
+            logger.error("Unable to load obj file")
+            pygame.quit()
+            return
+
+        # Game loop
         running = True
         while running:
             for event in pygame.event.get():
@@ -107,9 +160,8 @@ class Window:
                     running = False
 
             self.screen.fill(BLACK)
-            self.draw()
+            self.draw(ship)
             pygame.display.flip()
-        print(self.mat_proj)
         pygame.quit()
 
     @property
@@ -124,33 +176,7 @@ class Window:
             self._screenwidth = float(input("Screen Width"))
         return self._screenwidth
 
-    def update(self):
-        pass
-
-    cube = mesh(
-        [
-            # SOUTH
-            triangle.from_points(0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0),
-            triangle.from_points(0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0),
-            # EAST
-            triangle.from_points(1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0),
-            triangle.from_points(1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0),
-            # NORTH
-            triangle.from_points(1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0),
-            triangle.from_points(1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0),
-            # WEST
-            triangle.from_points(0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0),
-            triangle.from_points(0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0),
-            # TOP
-            triangle.from_points(0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0),
-            triangle.from_points(0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0),
-            # BOTTOM
-            triangle.from_points(1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
-            triangle.from_points(1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0),
-        ]
-    )
-
-    def draw(self):
+    def draw(self, m: mesh):
         self.clock.tick(60)
         self.fTheta += 1.0 * (self.clock.get_time() / 1000.0)
 
@@ -166,7 +192,10 @@ class Window:
         matRotX.m[2] = [0.0, sin(self.fTheta * 0.5) * -1.0, cos(self.fTheta * 0.5), 0.0]
         matRotX.m[3] = [0.0, 0.0, 0.0, 1.0]
 
-        for tri in self.cube.tris:
+        triangles_to_raster = []
+
+        # Calculate tranforms
+        for tri in m.tris:
             logger.debug("Current triangle pre-processed %s", tri)
 
             # Rotate on Z axis
@@ -183,12 +212,35 @@ class Window:
             )
             # Translate away from camera
             tri_translated = deepcopy(tri_rotated_zx)
-            tri_translated.p1.z = tri_rotated_zx.p1.z + 3.0
-            tri_translated.p2.z = tri_rotated_zx.p2.z + 3.0
-            tri_translated.p3.z = tri_rotated_zx.p3.z + 3.0
+            tri_translated.p1.z = tri_rotated_zx.p1.z + 8.0
+            tri_translated.p2.z = tri_rotated_zx.p2.z + 8.0
+            tri_translated.p3.z = tri_rotated_zx.p3.z + 8.0
             logger.debug(
                 "Current triangle translated in front of the camera %s", tri_translated
             )
+
+            # How similar is the normal of the surface to the line drawn between the camera and the surface?
+            # If the dot product of the normal and the line between the camera and surface is positive,
+            # the surface should be out of view
+            # Seemingly, this would be inverse if we wound the triangles in the opposite direction
+            if (
+                dot_product(tri_translated.normal, tri_translated.p1 - self.vCamera)
+                < 0.0
+            ):
+                triangles_to_raster.append(tri_translated)
+
+        # Sort triangles back to front
+        triangles_to_raster.sort(key=lambda x: x.sort_key, reverse=True)
+
+        # Rasterize sorted triangles
+        for tri_translated in triangles_to_raster:
+            # Illumination
+            light_direction = vec3d(0.0, 0.0, -1.0)
+            light_direction.normalize()
+            light_dp = dot_product(tri_translated.normal, light_direction)
+            value = int(light_dp * 255.0 % 255.0)
+            color = (value, value, value)
+
             # Project onto screen
             tri_projected = triangle(
                 multiply_vec3d_mat4x4(tri_translated.p1, self.mat_proj),
@@ -215,18 +267,32 @@ class Window:
             tri_projected.p3.y *= 0.5 * self.screenheight
 
             logger.debug("Current triangle 2d scaled into view %s", tri_projected)
-            # Draw
 
+            # Draw
             pygame.draw.polygon(
                 self.screen,
-                WHITE,
+                color,
                 (
                     (tri_projected.p1.x, tri_projected.p1.y),
                     (tri_projected.p2.x, tri_projected.p2.y),
                     (tri_projected.p3.x, tri_projected.p3.y),
                 ),
-                width=2,
             )
+            # Wireframe
+            pygame.draw.polygon(
+                self.screen,
+                BLACK,
+                (
+                    (tri_projected.p1.x, tri_projected.p1.y),
+                    (tri_projected.p2.x, tri_projected.p2.y),
+                    (tri_projected.p3.x, tri_projected.p3.y),
+                ),
+                width=1,
+            )
+
+
+def dot_product(a, b):
+    return a.x * b.x + a.y * b.y + a.z * b.z
 
 
 def multiply_vec3d_mat4x4(i: vec3d, m: mat4x4):
@@ -244,7 +310,29 @@ def multiply_vec3d_mat4x4(i: vec3d, m: mat4x4):
     return o
 
 
+def cross_product(a: vec3d, b: vec3d) -> vec3d:
+    return vec3d(
+        (a.y * b.z) - (a.z * b.y), (a.z * b.x) - (a.x * b.z), (a.x * b.y) - (a.y * b.x)
+    )
+
+
+def calculate_normal(tri: triangle):
+    line1 = vec3d(
+        tri.p2.x - tri.p1.x,
+        tri.p2.y - tri.p1.y,
+        tri.p2.z - tri.p1.z,
+    )
+    line2 = vec3d(
+        tri.p3.x - tri.p1.x,
+        tri.p3.y - tri.p1.y,
+        tri.p3.z - tri.p1.z,
+    )
+    crsp = cross_product(line1, line2)
+    crsp.normalize()
+    return crsp
+
+
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO)
     w = Window()
     w.start()
